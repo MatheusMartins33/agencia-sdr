@@ -173,81 +173,108 @@ O código está preparado para migrar de Google Sheets → API REST sem alterar 
 2. Altere `VITE_DATA_SOURCE=api` no `.env`
 3. Configure `VITE_API_BASE_URL`
 
-Os hooks (`useProdutos`, `useContatos`, etc.) consomem a mesma interface, independente da fonte.
+# agencia-sdr
 
-## 📈 Métricas Implementadas
+Aplicação frontend (Vite + React + TypeScript) para dashboard de performance de SDR — métricas, visualizações e integração com fontes de dados (demo, Google Sheets ou API).
 
-### Overview
-- Total de leads contatados
-- Taxa de resposta (%)
-- Taxa de conversão (%)
-- Score médio da base
-- Gráfico: Taxa de resposta por dia
+Este repositório contém a versão atualmente em desenvolvimento do projeto. O README anterior estava desatualizado; este arquivo resume como rodar, configurar e contribuir com o projeto.
 
-### Agente Ativo
-- Disparos por dia (trend)
-- Top 5 produtos disparados
-- Score médio dos leads disparados
-- Engajamento pós-disparo (%)
+## Principais tecnologias
 
-### Agente Reativo
-- Respostas por intenção (classificação por keywords)
-- Tempo médio de resposta
-- Conversão por intenção
-- Segmentos com melhor conversão
+- React + TypeScript
+- Vite
+- Tailwind CSS + shadcn/ui
+- TanStack Query
+- Supabase (cliente presente em `src/integrations/supabase`)
+- Recharts para visualizações
 
-### Produtos
-- Produtos mais vendidos (proxy: conversões)
-- Taxa de conversão por produto
-- Receita estimada (usa preco_promo quando disponível)
+## Scripts úteis
 
-### Leads
-- Distribuição de scores (histograma)
-- Distribuição por status
-- Leads quentes (score > 70)
-- Detalhamento com histórico de interações
+Disponíveis em `package.json`:
 
-## 🚢 Deploy
+- `npm run dev` — roda o ambiente de desenvolvimento (Vite)
+- `npm run build` — build para produção
+- `npm run build:dev` — build em modo development
+- `npm run preview` — preview do build
+- `npm run lint` — lint com ESLint
 
-### Vercel (Recomendado)
+Instalação:
 
-1. Faça push do código para GitHub
-2. Conecte o repositório no Vercel
-3. Configure as variáveis de ambiente no dashboard
-4. Deploy automático a cada push
-
-### Variáveis necessárias no Vercel:
-```
-VITE_DATA_SOURCE=sheets
-VITE_SHEETS_API_KEY=...
-VITE_SHEETS_SPREADSHEET_ID=...
-VITE_SHEETS_TAB_PRODUTOS=PRODUTOS
-VITE_SHEETS_TAB_CONTATOS=CONTATOS
-VITE_SHEETS_TAB_HISTORICO=HISTORICO
+```powershell
+npm install
 ```
 
-## 📝 Notas Importantes
+Rodar em desenvolvimento:
 
-- **Somente Leitura (MVP)**: O app não escreve nas planilhas. Atualizações devem ser feitas manualmente ou via sistemas externos.
-- **Cache**: Os dados são cacheados por 5 minutos (configurável em cada hook).
-- **Responsivo**: Design otimizado para desktop e mobile.
-- **Filtros de Data**: Overview e métricas de agentes suportam filtros (Hoje, 7d, 30d).
+```powershell
+npm run dev
+```
 
-## 🛡️ Segurança
+## Variáveis de ambiente
 
-- **API Key**: Nunca commite API keys no código. Use apenas variáveis de ambiente.
-- **CORS**: Configure permissões adequadas no Google Sheets (compartilhar com "Qualquer pessoa com o link").
-- **Rate Limits**: O Google Sheets API tem limites de requisições. Considere cache no backend para produção.
+Crie um arquivo `.env` na raiz (este arquivo NÃO deve ser comitado). Principais chaves usadas pelo projeto:
 
-## 🤝 Contribuindo
+- `VITE_DATA_SOURCE` — `demo` (padrão), `sheets` ou `api`
+- `VITE_SHEETS_API_KEY` — (quando `sheets`)
+- `VITE_SHEETS_SPREADSHEET_ID` — (quando `sheets`)
+- `VITE_SHEETS_TAB_PRODUTOS`, `VITE_SHEETS_TAB_CONTATOS`, `VITE_SHEETS_TAB_HISTORICO` — nomes das abas no Sheets
+- `VITE_API_BASE_URL` — quando `VITE_DATA_SOURCE=api`
 
-Este é um MVP. Futuras melhorias podem incluir:
-- Escrita em Google Sheets via API intermediária
-- Autenticação e permissões por usuário
-- Filtros avançados e exportação de relatórios
-- Integração com WhatsApp/n8n
-- Métricas de IA real (classificação de intenções com LLM)
+Exemplo mínimo:
 
-## 📄 Licença
+```env
+VITE_DATA_SOURCE=demo
+# VITE_SHEETS_API_KEY=...
+# VITE_SHEETS_SPREADSHEET_ID=...
+```
+
+Observação: já existe um arquivo `.env.example` com chaves de exemplo — copie-o para `.env` e preencha as chaves necessárias.
+
+## Estrutura do projeto (resumo)
+
+- `src/` — código fonte
+	- `components/` — componentes reutilizáveis (inclui `ui/` com os componentes shadcn)
+	- `pages/` — páginas da aplicação (Overview, AgenteAtivo, AgenteReativo, Produtos, Leads, Histórico, etc.)
+	- `hooks/` — hooks de dados (useProdutos, useContatos, useHistorico, ...)
+	- `services/` — integração com fontes de dados (`sheets.ts`, `api.ts`, `supabaseService.ts`)
+	- `lib/` — utilitários e fixtures (`fixtures.ts` fornece dados de exemplo para `demo` mode)
+
+Além disso há uma pasta `supabase/` com migrations e `tailwind.config.ts`, `vite.config.ts` e configurações de TypeScript/ESLint.
+
+## Deployment
+
+Recomendado: Vercel (deploy contínuo conectado ao GitHub). Configure variáveis de ambiente no dashboard do provedor.
+
+## Segurança e boas práticas
+
+- Nunca comitar `.env` ou chaves sensíveis. O projeto já possui `.gitignore` atualizado para ignorar `.env`.
+- Revise a pasta `supabase/` se ela contiver segredos antes de tornar o repositório público.
+
+## Contribuição
+
+Se quiser contribuir:
+
+1. Fork este repositório
+2. Crie uma branch com a feature ou correção: `git checkout -b feature/nome-da-feature`
+3. Faça commits pequenos e com mensagens claras
+4. Abra um Pull Request descrevendo as mudanças
+
+## Próximos passos sugeridos
+
+- Adicionar CI (GitHub Actions) para lint/build
+- Configurar proteções de branch (branch protection) no GitHub
+- Escrever um guia de deploy para Vercel/Netlify
+
+## Licença
 
 MIT
+
+---
+
+Se quiser, posso:
+
+- adicionar badges (build / license) ao topo do README
+- gerar um `CONTRIBUTING.md` e um `SECURITY.md`
+- configurar um workflow básico de GitHub Actions para lint/build
+
+Diga qual opção prefere que eu faça a seguir.
