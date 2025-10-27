@@ -93,6 +93,27 @@ export async function getUserTenants(): Promise<Tenant[]> {
   return data || [];
 }
 
+/**
+ * Busca o primeiro tenant associado ao usuário atual.
+ * Ideal para o contexto de onboarding ou quando um usuário tem apenas uma loja.
+ */
+export async function getTenantSettings(userId: string): Promise<Tenant | null> {
+  // A função getUserTenants já usa o ID do usuário logado, então o parâmetro userId é para consistência de chamada.
+  if (!userId) return null;
+
+  try {
+    const tenants = await getUserTenants();
+    // Retorna o primeiro tenant encontrado, que é o mais comum no onboarding.
+    if (tenants && tenants.length > 0) {
+      return tenants[0];
+    }
+    return null;
+  } catch (error) {
+    console.error("Error in getTenantSettings while fetching user tenants:", error);
+    return null;
+  }
+}
+
 // ==========================================
 // PRODUTOS
 // ==========================================

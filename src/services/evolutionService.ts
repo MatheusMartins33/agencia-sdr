@@ -47,8 +47,18 @@ export async function createInstance(settings: ChannelSettings) {
       response: responseText
     });
 
-    // Caso a instância já exista (status 409), tratamos como sucesso parcial
-    if (response.status === 409) {
+    let responseData;
+    try {
+        responseData = JSON.parse(responseText);
+    } catch (e) {
+        responseData = {};
+    }
+
+    // Caso a instância já exista (status 409 ou 403 com mensagem específica), tratamos como sucesso parcial
+    const alreadyExists = response.status === 409 || 
+                          (response.status === 403 && responseData.response?.message?.[0]?.includes("is already in use"));
+
+    if (alreadyExists) {
       console.warn('A instância da Evolution API já existe:', instance_name);
       return { instance: { instanceName: instance_name } };
     }
@@ -57,8 +67,7 @@ export async function createInstance(settings: ChannelSettings) {
       throw new Error(`Falha ao criar instância: ${responseText}`);
     }
 
-    // Converte texto de volta para JSON se possível
-    return responseText ? JSON.parse(responseText) : null;
+    return responseData;
   } catch (error) {
     console.error('[Evolution API] Erro ao criar instância:', error);
     throw error;
@@ -76,18 +85,35 @@ export async function getInstanceQrCode(settings: ChannelSettings): Promise<{ qr
     throw new Error("Variável de ambiente VITE_EVOLUTION_API_KEY não está definida.");
   }
 
-  const response = await fetch(`${evo_base_url}/instance/connect/${instance_name}`, {
+  let response = await fetch(`${evo_base_url}/instance/connect/${instance_name}`, {
     headers: getHeaders(apiKey),
   });
 
+  // Se a instância não for encontrada (404), tenta recriá-la e busca o QR novamente.
+  if (response.status === 404) {
+    console.warn(`Instância ${instance_name} não encontrada (404). Tentando recriar...`);
+    try {
+      await createInstance(settings);
+      // Tenta novamente buscar o QR code após a recriação
+      response = await fetch(`${evo_base_url}/instance/connect/${instance_name}`, {
+        headers: getHeaders(apiKey),
+      });
+    } catch (creationError: any) {
+      console.error(`Falha ao recriar a instância ${instance_name}:`, creationError);
+      // Propaga um erro claro se a recriação falhar
+      throw new Error(`A instância não foi encontrada e a tentativa de recriação falhou: ${creationError.message}`);
+    }
+  }
+
   if (!response.ok) {
-    throw new Error('Falha ao buscar QR code da instância.');
+    const errorText = await response.text().catch(() => 'sem corpo de resposta');
+    throw new Error(`Falha ao buscar QR code da instância. Status: ${response.status}, Resposta: ${errorText}`);
   }
 
   const data = await response.json();
   
-  // The 'base64' field contains the full data URL for the QR code.
-  // We need to extract only the base64 part.
+  // O campo 'base64' contém a data URL completa do QR code.
+  // Extraímos apenas a parte base64.
   const qrCode = data.base64.startsWith('data:image/png;base64,')
     ? data.base64.substring('data:image/png;base64,'.length)
     : data.base64;
