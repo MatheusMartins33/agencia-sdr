@@ -60,15 +60,18 @@ export interface AgentConfig {
   id: string;
   tenant_id: string;
   agent: AgentType;
+  name: string;
   system_prompt: string;
   version: number;
   active: boolean;
   trigger_config?: {
     type: 'schedule';
     hour: number;
+    timezone?: string;
   } | null;
   created_at: string;
   updated_at: string;
+  n8n_workflow_id: string | null;
 }
 
 /**

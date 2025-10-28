@@ -41,12 +41,17 @@ const App = () => (
                         <Route path="/" element={<Overview />} />
                         <Route path="/ingestao" element={<Ingestao />} />
                         <Route path="/agente-ativo" element={<AgenteAtivo />} />
-                        <Route path="/agente-reativo" element={<AgenteReativo />} />
+                        <Route
+                          path="/agente-reativo"
+                          element={<AgenteReativo />}
+                        />
                         <Route path="/produtos" element={<Produtos />} />
                         <Route path="/leads" element={<Leads />} />
                         <Route path="/historico" element={<Historico />} />
-                        <Route path="/configuracao" element={<Configuracao />} />
-                        {/* Expose onboarding inside the main layout so it appears with the sidebar */}
+                        <Route
+                          path="/configuracao"
+                          element={<Configuracao />}
+                        />
                         <Route path="/onboarding" element={<Onboarding />} />
                         <Route path="*" element={<NotFound />} />
                       </Routes>

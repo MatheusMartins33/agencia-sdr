@@ -2,9 +2,10 @@ import { useState } from "react";
 import { Header } from "@/components/Header";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorState } from "@/components/ErrorState";
-import { useMetricsLeads } from "@/hooks/useMetrics";
+// ✅ Importa todos os hooks necessários
 import { useContatos } from "@/hooks/useContatos";
 import { useHistorico } from "@/hooks/useHistorico";
+import { useMetricsLeads } from "@/hooks/useMetrics"; // Ajuste o caminho se necessário
 import {
   BarChart,
   Bar,
@@ -30,23 +31,43 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Contato } from "@/types";
+import { Contato, StatusLead } from "@/types"; // Importe StatusLead para tipagem mais forte
 import { formatDate } from "@/lib/dates";
 import { Button } from "@/components/ui/button";
 
 export default function Leads() {
+  // --- MUDANÇA 1: Simplificação da chamada de dados ---
+  // O hook useMetricsLeads já chama useContatos internamente, então não precisamos chamá-lo aqui.
+  // No entanto, ainda precisamos dos dados brutos de contatos e do estado de loading/error deles.
   const { data: contatos, isLoading: isContatosLoading, isError: isContatosError } = useContatos();
+  
+  // O histórico é necessário para o modal de detalhes, então mantemos essa chamada.
   const { data: historico, isLoading: isHistoricoLoading, isError: isHistoricoError } = useHistorico();
   
-  // Este hook é síncrono e depende dos dados acima, então não tem seu próprio estado de loading.
+  // O hook de métricas agora é chamado sem argumentos, pois ele mesmo busca seus dados.
   const metrics = useMetricsLeads();
+  // --- FIM DA MUDANÇA 1 ---
 
   const [selectedLead, setSelectedLead] = useState<Contato | null>(null);
 
+  // O estado de loading e error agora depende apenas das buscas primárias de dados.
   const isLoading = isContatosLoading || isHistoricoLoading;
   const isError = isContatosError || isHistoricoError;
 
-  if (isLoading) {
+  // --- MUDANÇA 2: Verificação mais robusta ---
+  // A página renderiza um erro se as métricas não puderem ser calculadas.
+  if (isError || (!isLoading && !metrics)) {
+    return (
+      <>
+        <Header />
+        <ErrorState message="Não foi possível carregar as métricas dos leads." />
+      </>
+    );
+  }
+  // --- FIM DA MUDANÇA 2 ---
+  
+  // O componente de loading agora é exibido se as buscas estiverem em andamento OU se as métricas ainda não estiverem prontas.
+  if (isLoading || !metrics) {
     return (
       <>
         <Header />
@@ -55,24 +76,18 @@ export default function Leads() {
     );
   }
 
-  if (isError || !contatos || !historico || !metrics) {
-    return (
-      <>
-        <Header />
-        <ErrorState message="Não foi possível carregar os dados dos leads." />
-      </>
-    );
-  }
-
-  const leadHistorico = selectedLead
+  const leadHistorico = selectedLead && historico
     ? historico.filter((h) => h.id_lead === selectedLead.id_lead)
     : [];
 
-  const getStatusBadge = (status: string) => {
-    const variants: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+  // Tipagem mais segura para a função do badge
+  const getStatusBadge = (status?: StatusLead) => {
+    if (!status) return <Badge variant="outline">desconhecido</Badge>;
+    
+    const variants: Record<StatusLead, "default" | "secondary" | "destructive" | "outline"> = {
       novo: "outline",
       contatado: "secondary",
-      respondeu: "default",
+      qualificado: "default", // Adicione os status que faltam se necessário
       convertido: "default",
       perdido: "destructive",
     };
@@ -201,24 +216,28 @@ export default function Leads() {
               <div>
                 <h3 className="font-semibold mb-2">Histórico de Interações</h3>
                 <div className="space-y-3 max-h-64 overflow-y-auto">
-                  {leadHistorico.map((hist) => (
-                    <div
-                      key={hist.id_historico}
-                      className="border-l-2 border-primary pl-4 py-2"
-                    >
-                      <p className="text-xs text-muted-foreground">
-                        {formatDate(hist.timestamp)} • {hist.tipo_agente}
-                      </p>
-                      <p className="text-sm mt-1">
-                        <strong>Mensagem:</strong> {hist.mensagem_enviada}
-                      </p>
-                      {hist.resposta_cliente && (
-                        <p className="text-sm mt-1 text-muted-foreground">
-                          <strong>Resposta:</strong> {hist.resposta_cliente}
+                  {leadHistorico.length > 0 ? (
+                    leadHistorico.map((hist) => (
+                      <div
+                        key={hist.id_historico}
+                        className="border-l-2 border-primary pl-4 py-2"
+                      >
+                        <p className="text-xs text-muted-foreground">
+                          {formatDate(hist.timestamp)} • {hist.tipo_agente}
                         </p>
-                      )}
-                    </div>
-                  ))}
+                        <p className="text-sm mt-1">
+                          <strong>Mensagem:</strong> {hist.mensagem_enviada}
+                        </p>
+                        {hist.resposta_cliente && (
+                          <p className="text-sm mt-1 text-muted-foreground">
+                            <strong>Resposta:</strong> {hist.resposta_cliente}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-4">Nenhuma interação registrada para este lead.</p>
+                  )}
                 </div>
               </div>
             </div>

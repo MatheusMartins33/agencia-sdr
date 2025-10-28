@@ -114,6 +114,63 @@ export async function getTenantSettings(userId: string): Promise<Tenant | null> 
   }
 }
 
+/**
+ * Atualiza o status de onboarding de um tenant para 'done'
+ */
+export async function updateTenantOnboardingStatus(tenantId: string): Promise<void> {
+  const { error } = await supabase
+    .from('tenants')
+    .update({ onboarding_status: 'done', updated_at: new Date().toISOString() })
+    .eq('id', tenantId);
+
+  if (error) {
+    console.error("Error updating tenant onboarding status:", error.message);
+    throw error;
+  }
+}
+
+/**
+ * Reseta o status de onboarding de um tenant e limpa configurações associadas.
+ */
+export async function resetTenantOnboarding(tenantId: string): Promise<void> {
+  if (!tenantId) {
+    throw new Error("O ID do tenant é obrigatório para resetar o onboarding.");
+  }
+
+  // 1. Deleta as configurações de canal associadas
+  const { error: deleteChannelError } = await supabase
+    .from('channel_settings')
+    .delete()
+    .eq('tenant_id', tenantId);
+
+  if (deleteChannelError) {
+    console.error("Error deleting channel settings during reset:", deleteChannelError.message);
+    // Não lançar erro aqui, pode não haver settings para deletar
+  }
+
+  // 2. Deleta as configurações de agentes associadas
+  const { error: deleteAgentError } = await supabase
+    .from('agent_configs')
+    .delete()
+    .eq('tenant_id', tenantId);
+
+  if (deleteAgentError) {
+    console.error("Error deleting agent configs during reset:", deleteAgentError.message);
+    // Não lançar erro aqui, pode não haver configs para deletar
+  }
+
+  // 3. Atualiza o status do onboarding do tenant
+  const { error: updateTenantError } = await supabase
+    .from('tenants')
+    .update({ onboarding_status: 'not_started', updated_at: new Date().toISOString() })
+    .eq('id', tenantId);
+
+  if (updateTenantError) {
+    console.error("Error resetting tenant onboarding status:", updateTenantError.message);
+    throw updateTenantError;
+  }
+}
+
 // ==========================================
 // PRODUTOS
 // ==========================================
@@ -341,64 +398,43 @@ export async function updateChannelStatus(
 // ==========================================
 
 /**
- * Salva os prompts dos agentes (ativo e reativo)
- * Função simplificada usada no onboarding
- */
-export async function saveAgentPrompts(
-  tenantId: string,
-  promptAtivo: string,
-  promptReativo: string
-): Promise<void> {
-  if (!tenantId) {
-    throw new Error("tenantId é obrigatório");
-  }
-
-  // Salva o agente ativo
-  await upsertAgentConfig({
-    tenantId,
-    agentType: 'ativo',
-    systemPrompt: promptAtivo,
-  });
-
-  // Salva o agente reativo
-  await upsertAgentConfig({
-    tenantId,
-    agentType: 'reativo',
-    systemPrompt: promptReativo,
-  });
-}
-
-/**
- * Insere ou atualiza a configuração de um agente
+ * Insere ou atualiza a configuração de um agente no banco de dados.
+ * Esta função é agnóstica à UI e lida com a lógica de banco de dados.
  */
 export async function upsertAgentConfig(config: {
   tenantId: string;
   agentType: 'ativo' | 'reativo';
+  name: string;
   systemPrompt: string;
   scheduleHour?: number;
+  timezone?: string;
+  isActive: boolean;
+  n8nWorkflowId?: string;
 }): Promise<void> {
-  const { tenantId, agentType, systemPrompt, scheduleHour } = config;
+  const { tenantId, agentType, name, systemPrompt, scheduleHour, timezone, isActive, n8nWorkflowId } = config;
 
-  // Primeiro, busca se já existe uma configuração
+  // Primeiro, busca se já existe uma configuração para o mesmo tipo de agente
   const { data: existing } = await supabase
     .from('agent_configs')
-    .select('*')
+    .select('id, version')
     .eq('tenant_id', tenantId)
     .eq('agent', agentType)
-    .single();
+    .maybeSingle();
 
   const row = {
     tenant_id: tenantId,
     agent: agentType,
+    name: name,
     system_prompt: systemPrompt,
+    n8n_workflow_id: n8nWorkflowId, // Novo campo para o ID do workflow
     version: existing ? existing.version + 1 : 1,
-    active: true,
-    trigger_config: scheduleHour ? { type: 'schedule', hour: scheduleHour } : null,
+    active: isActive,
+    trigger_config: scheduleHour !== undefined ? { type: 'schedule', hour: scheduleHour, timezone: timezone } : null,
     updated_at: new Date().toISOString(),
   };
 
   if (existing) {
-    // Atualiza existente
+    // Atualiza a configuração existente
     const { error } = await supabase
       .from('agent_configs')
       .update(row)
@@ -409,7 +445,7 @@ export async function upsertAgentConfig(config: {
       throw error;
     }
   } else {
-    // Insere novo
+    // Insere uma nova configuração
     const { error } = await supabase
       .from('agent_configs')
       .insert(row);
@@ -434,7 +470,7 @@ export async function getAgentConfig(
     .eq('tenant_id', tenantId)
     .eq('agent', agentType)
     .eq('active', true)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error(`Error fetching ${agentType} agent config:`, error.message);

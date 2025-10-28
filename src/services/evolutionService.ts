@@ -54,12 +54,14 @@ export async function createInstance(settings: ChannelSettings) {
         responseData = {};
     }
 
-    // Caso a instância já exista (status 409 ou 403 com mensagem específica), tratamos como sucesso parcial
-    const alreadyExists = response.status === 409 || 
-                          (response.status === 403 && responseData.response?.message?.[0]?.includes("is already in use"));
-
+    // Caso a instância já exista (status 409 ou 403), tratamos como sucesso parcial
+    // A documentação indica que um 403 também pode ser devolvido quando a instância
+    // já foi criada anteriormente. Não analisamos o corpo da mensagem aqui para
+    // simplificar o fluxo.
+    const alreadyExists = response.status === 409 || response.status === 403;
     if (alreadyExists) {
       console.warn('A instância da Evolution API já existe:', instance_name);
+      // retornamos um objeto mínimo com o nome da instância para indicar sucesso
       return { instance: { instanceName: instance_name } };
     }
 
@@ -141,8 +143,15 @@ export async function getInstanceStatus(settings: ChannelSettings): Promise<{ st
     }
 
     const data = await response.json();
-    // A API retorna { "state": "open" } ou { "state": "close" }
-    return { status: data.state };
+    /*
+     * A API de ConnectionState pode retornar diferentes formatos:
+     * 1) { "instance": { "instanceName": "teste", "state": "open" } }
+     * 2) { "state": "open" }
+     * 3) { "status": "open" }
+     * Para garantir compatibilidade, tentamos obter a propriedade de todas as formas.
+     */
+    const state = data?.instance?.state || data?.state || data?.status;
+    return { status: state };
 }
 
 /**

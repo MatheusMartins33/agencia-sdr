@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,9 +29,12 @@ import {
   createTenant,
   createChannelSettings,
   updateChannelStatus,
-  saveAgentPrompts,
   getChannelSettings,
   getTenantSettings,
+  updateTenantOnboardingStatus,
+  resetTenantOnboarding,
+  getAgentConfig,
+  upsertAgentConfig, // Added
 } from "@/services/supabaseService";
 import {
   createInstance,
@@ -49,16 +53,101 @@ import {
   XCircle,
   Rocket,
   HelpCircle,
+  RefreshCw,
 } from "lucide-react";
-import type { Tenant, ChannelSettings } from "@/types";
+import type { Tenant, ChannelSettings, AgentConfig } from "@/types";
+import type { User } from "@supabase/supabase-js";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { createWorkflow, updateWorkflow } from "@/services/n8nService";
+import { parseAndModifyWorkflow, type WorkflowConfig } from "@/lib/workflowUtils";
+import { synthesizeCompanyContext } from "@/services/openAIService";
 
 // --- TYPES AND INTERFACES ---
-type ChannelState = "INITIAL" | "CREATING_INSTANCE" | "PENDING_QR" | "CONNECTING" | "CONNECTED" | "ERROR";
+type ChannelState =
+  | "INITIAL"
+  | "CREATING_INSTANCE"
+  | "PENDING_QR"
+  | "CONNECTING"
+  | "CONNECTED"
+  | "ERROR";
 
-// --- CHILD COMPONENTS FOR EACH STEP ---
+// --- CHILD COMPONENTS ---
 
-const Step1Tenant = ({ tenant, onTenantCreated }: { tenant: Tenant | null, onTenantCreated: (newTenant: Tenant) => void }) => {
+const OnboardingStatus = ({
+  tenant,
+  channelSettings,
+  agentConfig, // Changed from promptsSaved
+  onReset,
+  isLoading,
+}: {
+  tenant: Tenant | null;
+  channelSettings: ChannelSettings | null;
+  agentConfig: AgentConfig | null; // Changed from promptsSaved
+  onReset: () => void;
+  isLoading: boolean;
+}) => {
+  const getStatus = (condition: boolean) =>
+    condition ? (
+      <span className="flex items-center text-green-600 font-medium">
+        <CheckCircle className="h-4 w-4 mr-2" /> Concluído
+      </span>
+    ) : (
+      <span className="flex items-center text-muted-foreground">
+        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Pendente
+      </span>
+    );
+
+  return (
+    <Card className="mb-8 bg-card/50 border-border/50">
+      <CardHeader>
+        <div className="flex justify-between items-center">
+          <div>
+            <CardTitle>Status da Configuração</CardTitle>
+            <CardDescription>
+              Acompanhe e gerencie o progresso do seu ambiente.
+            </CardDescription>
+          </div>
+          <Button variant="outline" onClick={onReset} disabled={isLoading || !tenant}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Reiniciar Onboarding
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ul className="space-y-3 text-sm">
+          <li className="flex justify-between items-center p-2 rounded-md bg-background">
+            <span>1. Criação da Loja</span>
+            {getStatus(!!tenant)}
+          </li>
+          <li className="flex justify-between items-center p-2 rounded-md bg-background">
+            <span>2. Conexão com WhatsApp</span>
+            {getStatus(!!channelSettings)}
+          </li>
+          <li className="flex justify-between items-center p-2 rounded-md bg-background">
+            <span>3. Personalização dos Agentes</span>
+            {getStatus(!!agentConfig)} 
+          </li>
+        </ul>
+      </CardContent>
+    </Card>
+  );
+};
+
+const Step1Tenant = ({
+  tenant,
+  onTenantCreated,
+}: {
+  tenant: Tenant | null;
+  onTenantCreated: (newTenant: Tenant) => void;
+}) => {
   const [tenantName, setTenantName] = useState(tenant?.name || "");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,9 +160,12 @@ const Step1Tenant = ({ tenant, onTenantCreated }: { tenant: Tenant | null, onTen
       const newTenant = await createTenant(tenantName.trim());
       onTenantCreated(newTenant);
     } catch (err: any) {
-      setError("Falha ao criar a loja. Verifique se o nome já não está em uso.");
+      setError(
+        "Falha ao criar a loja. Verifique se o nome já não está em uso."
+      );
       console.error(err);
-    } finally {
+    }
+    finally {
       setIsLoading(false);
     }
   };
@@ -83,7 +175,8 @@ const Step1Tenant = ({ tenant, onTenantCreated }: { tenant: Tenant | null, onTen
       <CardHeader>
         <CardTitle>1. Crie sua Loja</CardTitle>
         <CardDescription>
-          Comece dando um nome para sua loja ou empresa. Este nome será usado para identificar seu ambiente.
+          Comece dando um nome para sua loja ou empresa. Este nome será usado
+          para identificar seu ambiente.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -104,16 +197,27 @@ const Step1Tenant = ({ tenant, onTenantCreated }: { tenant: Tenant | null, onTen
           </Alert>
         )}
         {tenant && (
-          <Alert variant="default" className="border border-green-100 bg-green-50">
-            <CheckCircle className="h-4 w-4 text-green-500"/>
+          <Alert
+            variant="default"
+            className="border border-green-100 bg-green-50"
+          >
+            <CheckCircle className="h-4 w-4 text-green-500" />
             <AlertTitle>Loja Criada!</AlertTitle>
-            <AlertDescription>Sua loja "{tenant.name}" está pronta. Você pode avançar para o próximo passo.</AlertDescription>
+            <AlertDescription>
+              Sua loja "{tenant.name}" está pronta. Você pode avançar para o
+              próximo passo.
+            </AlertDescription>
           </Alert>
         )}
       </CardContent>
       <CardFooter className="flex justify-end">
-        <Button onClick={handleCreate} disabled={!tenantName.trim() || isLoading || !!tenant}>
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        <Button
+          onClick={handleCreate}
+          disabled={!tenantName.trim() || isLoading || !!tenant}
+        >
+          {isLoading && (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          )}
           {tenant ? "Salvo" : "Salvar e Avançar"}
         </Button>
       </CardFooter>
@@ -121,7 +225,13 @@ const Step1Tenant = ({ tenant, onTenantCreated }: { tenant: Tenant | null, onTen
   );
 };
 
-const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChannelConnected: (settings: ChannelSettings) => void }) => {
+const Step2Whatsapp = ({
+  tenant,
+  onChannelConnected,
+}: {
+  tenant: Tenant;
+  onChannelConnected: (settings: ChannelSettings) => void;
+}) => {
   const [settings, setSettings] = useState<ChannelSettings | null>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -131,7 +241,43 @@ const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChann
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
 
-  // Carrega configurações existentes ao montar o componente
+  const validateInstanceAndCheckConnected = useCallback(
+    async (channel: ChannelSettings): Promise<boolean> => {
+      try {
+        try {
+          const createResult: any = await createInstance(channel);
+          const statusCriacao: string | undefined = createResult?.instance?.status;
+          if (
+            statusCriacao &&
+            !["created", "open", "close"].includes(statusCriacao)
+          ) {
+            console.warn(
+              `[validateInstance] Status inesperado ao criar instância: ${statusCriacao}`
+            );
+          }
+        } catch (createErr: any) {
+          const msg = createErr?.message || "";
+          const alreadyExists =
+            msg.includes("already exists") || msg.includes("already in use") ||
+            msg.includes("Falha ao criar instância");
+          if (!alreadyExists) {
+            throw createErr;
+          }
+        }
+
+        try {
+          const statusResult = await getInstanceStatus(channel);
+          return statusResult.status === "open";
+        } catch (err) {
+          return false;
+        }
+      } catch (err: any) {
+        throw new Error(err?.message || "Erro ao validar a instância.");
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     const fetchSettings = async () => {
       try {
@@ -139,31 +285,37 @@ const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChann
         if (existing) {
           setSettings(existing);
           if (existing.wa_number) setWaNumber(existing.wa_number);
-          
-          // Verifica o status atual da instância
-          if (existing.status === 'CONNECTED') {
-            setStatus('CONNECTED');
-            setStatusMessage('Canal já conectado!');
+
+          if (existing.status === "CONNECTED") {
+            setStatus("CONNECTED");
+            setStatusMessage("Canal já conectado!");
             onChannelConnected(existing);
-          } else if (existing.status === 'PENDING_QR') {
-            // Se estava pendente, verifica se já conectou
+          } else if (existing.status === "PENDING_QR") {
             try {
               const statusResult = await getInstanceStatus(existing);
-              if (statusResult.status === 'open') {
-                await updateChannelStatus(tenant.id, "CONNECTED", existing.wa_number);
-                setStatus('CONNECTED');
-                setStatusMessage('Canal conectado!');
-                const updatedSettings = await getChannelSettings(tenant.id);
+              if (statusResult.status === "open") {
+                await updateChannelStatus(
+                  tenant.id,
+                  "CONNECTED",
+                  existing.wa_number
+                );
+                setStatus("CONNECTED");
+                setStatusMessage("Canal conectado!");
+                const updatedSettings = await getChannelSettings(
+                  tenant.id
+                );
                 if (updatedSettings) {
                   onChannelConnected(updatedSettings);
                 }
               } else {
-                setStatus('INITIAL');
-                setStatusMessage('Conexão anterior não finalizada. Tente novamente.');
+                setStatus("INITIAL");
+                setStatusMessage(
+                  "Conexão anterior não finalizada. Tente novamente."
+                );
               }
             } catch (err) {
               console.error("Erro ao verificar status:", err);
-              setStatus('INITIAL');
+              setStatus("INITIAL");
             }
           }
         }
@@ -176,188 +328,96 @@ const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChann
     fetchSettings();
   }, [tenant.id, onChannelConnected]);
 
-  const startConnectionProcess = useCallback(async (channel: ChannelSettings) => {
-    let pollingInterval: NodeJS.Timeout | null = null;
-    let socket: WebSocket | null = null;
-    let isConnected = false;
+  const startConnectionProcess = useCallback(
+    async (channel: ChannelSettings) => {
+      let pollingInterval: number | null = null;
+      let socket: WebSocket | null = null;
+      let isConnected = false;
 
-    const cleanup = () => {
-      console.log('[Cleanup] Limpando recursos...');
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-        pollingInterval = null;
-      }
-      if (socket) {
-        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-          socket.close();
-        }
-        socket = null;
-      }
-    };
+      const MAX_POLLING_MS = 2 * 60 * 1000;
+      const pollingStart = Date.now();
 
-    const handleSuccessfulConnection = async () => {
-      if (isConnected) {
-        console.log('[Connection] Já conectado, ignorando chamada duplicada');
-        return;
-      }
-      isConnected = true;
-      console.log('[Connection] Conexão estabelecida com sucesso!');
-      
-      cleanup();
-      setStatus("CONNECTED");
-      setStatusMessage("Conectado com sucesso!");
-      
-      try {
-        await updateChannelStatus(tenant.id, "CONNECTED", channel.wa_number || undefined);
-        const updatedSettings = await getChannelSettings(tenant.id);
-        if (updatedSettings) {
-          onChannelConnected(updatedSettings);
-        }
-      } catch (err) {
-        console.error('[Connection] Erro ao atualizar status:', err);
-      }
-    };
+      const cleanup = () => {
+        if (pollingInterval) clearInterval(pollingInterval);
+        if (socket) socket.close();
+      };
 
-    const pollStatus = () => {
-      console.log('[Polling] Iniciando monitoramento de status...');
-      pollingInterval = setInterval(async () => {
-        if (isConnected) {
-          cleanup();
-          return;
-        }
-        
+      const handleSuccessfulConnection = async () => {
+        if (isConnected) return;
+        isConnected = true;
+        cleanup();
+        setStatus("CONNECTED");
+        setStatusMessage("Conectado com sucesso!");
+
         try {
-          console.log('[Polling] Verificando status da instância...');
-          const statusResult = await getInstanceStatus(channel);
-          console.log('[Polling] Status recebido:', statusResult.status);
-          
-          if (statusResult.status === 'open') {
-            await handleSuccessfulConnection();
-          }
-        } catch (pollErr) {
-          console.error('[Polling] Erro ao verificar status:', pollErr);
+          await updateChannelStatus(
+            tenant.id,
+            "CONNECTED",
+            channel.wa_number || undefined
+          );
+          const updatedSettings = await getChannelSettings(tenant.id);
+          if (updatedSettings) onChannelConnected(updatedSettings);
+        } catch (err) {
+          console.error("Erro ao atualizar status:", err);
         }
-      }, 5000);
-    };
+      };
 
-    try {
-      // PASSO 1: Criar a instância (se não existir)
-      setStatus("CREATING_INSTANCE");
-      setStatusMessage("Criando instância no WhatsApp...");
-      console.log('[Instance] Criando instância:', channel.instance_name);
-      
-      try {
-        await createInstance(channel);
-        console.log('[Instance] Instância criada com sucesso');
-      } catch (createErr: any) {
-        // Se já existe (409 ou mensagem específica), continua normalmente
-        const alreadyExists = createErr.message?.includes('already exists') || 
-                              createErr.message?.includes('already in use');
-        if (alreadyExists) {
-          console.warn('[Instance] Instância já existe, continuando...');
-        } else {
-          throw createErr;
-        }
-      }
-
-      // PASSO 2: Buscar o QR Code
-      setStatus("PENDING_QR");
-      setStatusMessage("Gerando QR Code...");
-      console.log('[QR Code] Buscando QR Code...');
-      
-      const { qrCode: qrData, pairingCode: pairingData } = await getInstanceQrCode(channel);
-      console.log('[QR Code] QR Code recebido, tamanho:', qrData?.length);
-      
-      setQrCode(qrData);
-      setPairingCode(pairingData);
-      setStatusMessage("Escaneie o QR Code ou use o código de pareamento");
-
-      // PASSO 3: Configurar monitoramento da conexão
-      setStatus("CONNECTING");
-      console.log('[WebSocket] Tentando conectar via WebSocket...');
-      
-      // Tenta WebSocket primeiro
-      try {
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const baseUrl = channel.evo_base_url.replace(/^https?:\/\//, '');
-        const wsUrl = `${wsProtocol}//${baseUrl}/instance/webhook/${channel.instance_name}`;
-        
-        console.log('[WebSocket] URL:', wsUrl);
-        socket = new WebSocket(wsUrl);
-
-        socket.onopen = () => {
-          console.log('[WebSocket] Conexão WebSocket estabelecida');
-          setStatusMessage("Aguardando leitura do QR Code...");
-        };
-
-        socket.onmessage = async (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            console.log('[WebSocket] Mensagem recebida:', data);
-            
-            if (data.event === "connection.update" && data.data?.state === "open") {
-              console.log('[WebSocket] Conexão confirmada via WebSocket');
-              await handleSuccessfulConnection();
+      const pollStatus = () => {
+        pollingInterval = window.setInterval(async () => {
+          if (isConnected || Date.now() - pollingStart > MAX_POLLING_MS) {
+            cleanup();
+            if (!isConnected) {
+              setStatus("ERROR");
+              setError("Tempo de conexão esgotado. Tente novamente.");
             }
-          } catch (err) {
-            console.error('[WebSocket] Erro ao processar mensagem:', err);
+            return;
           }
-        };
-
-        socket.onerror = (err) => {
-          console.error('[WebSocket] Erro na conexão:', err);
-          setStatusMessage("Monitorando conexão via polling...");
-          // Inicia polling como fallback se WebSocket falhar
-          if (!pollingInterval) {
-            pollStatus();
+          try {
+            const statusResult = await getInstanceStatus(channel);
+            if (statusResult.status === "open") await handleSuccessfulConnection();
+          } catch (pollErr) {
+            console.error("Erro ao verificar status:", pollErr);
           }
-        };
+        }, 5000);
+      };
 
-        socket.onclose = () => {
-          console.log('[WebSocket] Conexão fechada');
-          // Se socket fecha antes de conectar, inicia polling
-          if (!isConnected && !pollingInterval) {
-            console.log('[WebSocket] Iniciando polling como fallback');
-            pollStatus();
-          }
-        };
-      } catch (wsErr) {
-        console.error('[WebSocket] Falha ao criar WebSocket:', wsErr);
-        // Se WebSocket falhar completamente, usa apenas polling
-        pollStatus();
-      }
-
-      // PASSO 4: Iniciar polling como rede de segurança (se WebSocket não iniciou)
-      // Apenas inicia se o WebSocket não conseguiu iniciar polling
-      setTimeout(() => {
-        if (!pollingInterval && !isConnected) {
-          console.log('[Polling] Iniciando polling como rede de segurança');
-          pollStatus();
+      try {
+        setStatus("CREATING_INSTANCE");
+        setStatusMessage("Criando instância no WhatsApp...");
+        try {
+          await createInstance(channel);
+        } catch (createErr: any) {
+          const alreadyExists = createErr.message?.includes("already exists") || createErr.message?.includes("already in use");
+          if (!alreadyExists) throw createErr;
         }
-      }, 2000);
 
-      return cleanup;
+        setStatus("PENDING_QR");
+        setStatusMessage("Gerando QR Code...");
+        const { qrCode: qrData, pairingCode: pairingData } = await getInstanceQrCode(channel);
+        setQrCode(qrData);
+        setPairingCode(pairingData);
+        setStatusMessage("Escaneie o QR Code ou use o código de pareamento");
 
-    } catch (err: any) {
-      console.error('[Connection] Erro no processo de conexão:', err);
-      setError(err.message || "Falha ao iniciar a conexão.");
-      setStatus("ERROR");
-      setStatusMessage("");
-      cleanup();
-      throw err;
-    }
-  }, [tenant.id, onChannelConnected]);
+        setStatus("CONNECTING");
+        pollStatus(); // Start polling immediately as a fallback
+
+      } catch (err: any) {
+        setError(err.message || "Falha ao iniciar a conexão.");
+        setStatus("ERROR");
+        cleanup();
+      }
+    },
+    [tenant.id, onChannelConnected]
+  );
 
   const handleConnect = async () => {
     if (!waNumber.trim()) {
       setError("Digite um número de WhatsApp válido (incluindo DDI e DDD).");
       return;
     }
-    
-    // Valida formato básico do número
-    const cleanNumber = waNumber.replace(/\D/g, '');
+    const cleanNumber = waNumber.replace(/\D/g, "");
     if (cleanNumber.length < 10) {
-      setError("Número muito curto. Use o formato: DDI + DDD + número (ex: 5511999999999)");
+      setError("Número muito curto. Use o formato: DDI + DDD + número.");
       return;
     }
 
@@ -365,79 +425,47 @@ const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChann
     setError(null);
     setQrCode(null);
     setPairingCode(null);
-    setStatusMessage("");
 
     try {
-      console.log('[Connect] Iniciando processo de conexão...');
-      
-      // Cria ou obtém as configurações do canal
       let channel = settings;
       if (!channel) {
-        console.log('[Connect] Criando configurações do canal...');
         channel = await createChannelSettings(tenant);
       }
-      
       const channelForInstance = { ...channel, wa_number: waNumber };
       setSettings(channelForInstance);
-      
-      // Atualiza status no banco antes de iniciar
-      await updateChannelStatus(tenant.id, "PENDING_QR", waNumber);
-      
-      // Inicia o processo de conexão
-      await startConnectionProcess(channelForInstance);
 
+      const alreadyConnected = await validateInstanceAndCheckConnected(channelForInstance);
+      if (alreadyConnected) {
+        await updateChannelStatus(tenant.id, "CONNECTED", waNumber);
+        setStatus("CONNECTED");
+        setStatusMessage("Canal conectado!");
+        const updatedSettings = await getChannelSettings(tenant.id);
+        if (updatedSettings) onChannelConnected(updatedSettings);
+        return;
+      }
+
+      await updateChannelStatus(tenant.id, "PENDING_QR", waNumber);
+      await startConnectionProcess(channelForInstance);
     } catch (err: any) {
-      console.error('[Connect] Erro:', err);
-      setError(err.message || "Falha ao iniciar a conexão. Verifique as configurações da Evolution API.");
+      setError(err.message || "Falha ao iniciar a conexão.");
       setStatus("ERROR");
-      setStatusMessage("");
-    } finally {
+    }
+    finally {
       setIsLoading(false);
     }
   };
 
   const renderStatus = () => {
-    const statusConfig: Record<ChannelState, { icon: JSX.Element | null; text: string; color: string }> = {
-      INITIAL: { 
-        icon: null, 
-        text: "Informe seu número e clique em Conectar.", 
-        color: "text-muted-foreground" 
-      },
-      CREATING_INSTANCE: { 
-        icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, 
-        text: statusMessage, 
-        color: "text-blue-600" 
-      },
-      PENDING_QR: { 
-        icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, 
-        text: statusMessage, 
-        color: "text-blue-600" 
-      },
-      CONNECTING: { 
-        icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, 
-        text: statusMessage, 
-        color: "text-blue-600" 
-      },
-      CONNECTED: { 
-        icon: <CheckCircle className="mr-2 h-4 w-4 text-green-500" />, 
-        text: statusMessage || "Conectado com sucesso!", 
-        color: "text-green-600" 
-      },
-      ERROR: { 
-        icon: <XCircle className="mr-2 h-4 w-4 text-red-500" />, 
-        text: error || 'Ocorreu um erro.', 
-        color: "text-red-600" 
-      }
+    const statusConfig = {
+      INITIAL: { icon: null, text: "Informe seu número e clique em Conectar.", color: "text-muted-foreground" },
+      CREATING_INSTANCE: { icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, text: statusMessage, color: "text-blue-600" },
+      PENDING_QR: { icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, text: statusMessage, color: "text-blue-600" },
+      CONNECTING: { icon: <Loader2 className="mr-2 h-4 w-4 animate-spin" />, text: statusMessage, color: "text-blue-600" },
+      CONNECTED: { icon: <CheckCircle className="mr-2 h-4 w-4 text-green-500" />, text: statusMessage || "Conectado com sucesso!", color: "text-green-600" },
+      ERROR: { icon: <XCircle className="mr-2 h-4 w-4 text-red-500" />, text: error || "Ocorreu um erro.", color: "text-red-600" },
     };
-
     const config = statusConfig[status];
-    
-    return (
-      <div className={`flex items-center ${config.color}`}>
-        {config.icon}
-        <span className="text-sm">{config.text}</span>
-      </div>
-    );
+    return <div className={`flex items-center ${config.color}`}>{config.icon}<span className="text-sm">{config.text}</span></div>;
   };
 
   return (
@@ -449,82 +477,169 @@ const Step2Whatsapp = ({ tenant, onChannelConnected }: { tenant: Tenant, onChann
       <CardContent className="space-y-6">
         <div className="space-y-2">
           <Label htmlFor="wa-number">Número do WhatsApp (com DDI e DDD)</Label>
-          <Input 
-            id="wa-number" 
-            placeholder="Ex: 5511999999999" 
-            value={waNumber} 
-            onChange={(e) => setWaNumber(e.target.value)} 
-            disabled={isLoading || status === 'CONNECTED'} 
-          />
-          <p className="text-xs text-muted-foreground">
-            Formato: DDI (55) + DDD (11) + Número (999999999)
-          </p>
+          <Input id="wa-number" placeholder="Ex: 5511999999999" value={waNumber} onChange={(e) => setWaNumber(e.target.value)} disabled={isLoading || status === "CONNECTED"} />
+          <p className="text-xs text-muted-foreground">Formato: DDI (55) + DDD (11) + Número (999999999)</p>
         </div>
-        
         <div className="flex flex-col items-center justify-center space-y-4">
           <div className="w-64 h-64 bg-muted flex items-center justify-center rounded-lg overflow-hidden border-2 border-border">
             {qrCode && (status === "PENDING_QR" || status === "CONNECTING") ? (
-              <img 
-                src={`data:image/png;base64,${qrCode}`} 
-                alt="QR Code do WhatsApp" 
-                className="w-full h-full object-contain"
-              />
+              <img src={`data:image/png;base64,${qrCode}`} alt="QR Code do WhatsApp" className="w-full h-full object-contain" />
             ) : (
-              <div className="flex flex-col items-center text-center p-4">
-                {renderStatus()}
-              </div>
+              <div className="flex flex-col items-center text-center p-4">{renderStatus()}</div>
             )}
           </div>
-          
           {pairingCode && (status === "PENDING_QR" || status === "CONNECTING") && (
             <div className="text-center p-4 bg-muted rounded-lg w-full">
               <p className="text-sm text-muted-foreground mb-2">Ou use o código de pareamento no WhatsApp:</p>
               <p className="text-2xl font-bold tracking-widest font-mono">{pairingCode}</p>
-              <p className="text-xs text-muted-foreground mt-2">
-                WhatsApp → Dispositivos Vinculados → Vincular um dispositivo → Vincular com número
-              </p>
+              <p className="text-xs text-muted-foreground mt-2">WhatsApp → Dispositivos Vinculados → Vincular um dispositivo → Vincular com número</p>
             </div>
           )}
-          
-          {status === 'ERROR' && error && (
-            <Alert variant="destructive" className="w-full">
-              <AlertTitle>Erro na Conexão</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+          {status === "ERROR" && error && <Alert variant="destructive" className="w-full"><AlertTitle>Erro na Conexão</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
         </div>
       </CardContent>
       <CardFooter className="flex justify-end">
-        {status !== 'CONNECTED' ? (
+        {status !== "CONNECTED" ? (
           <Button onClick={handleConnect} disabled={isLoading || !waNumber.trim()}>
-            {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Conectar
+            {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Conectar
           </Button>
         ) : (
-          <div className="flex items-center gap-2 text-green-600">
-            <CheckCircle />
-            <span>Canal Conectado</span>
-          </div>
+          <div className="flex items-center gap-2 text-green-600"><CheckCircle /><span>Canal Conectado</span></div>
         )}
       </CardFooter>
     </Card>
   );
 };
 
-const Step3AgentPrompts = ({ tenant, onPromptsSaved }: { tenant: Tenant, onPromptsSaved: () => void }) => {
-  const [promptAtivo, setPromptAtivo] = useState("Você é o Agente SDR da [Nome da Loja]. Seja simpático, utilize emojis sutis e destaque promoções.");
-  const [promptReativo, setPromptReativo] = useState("Você é a assistente virtual da [Nome da Loja]. Responda com educação, ajude com dúvidas sobre produtos e nunca force a venda.");
+
+
+const Step3AgentPrompts = ({
+  tenant,
+  channelSettings,
+  onAgentConfigSaved, // Corrected prop name
+  existingConfig,
+}: {
+  tenant: Tenant;
+  channelSettings: ChannelSettings | null;
+  onAgentConfigSaved: (config: AgentConfig) => void; // Corrected prop name and signature
+  existingConfig: AgentConfig | null;
+}) => {
+  const isUpdateMode = Boolean(existingConfig);
+
+  // Form fields state
+  const [name, setName] = useState("");
+  const [scheduleHour, setScheduleHour] = useState("8");
+  const [timezone, setTimezone] = useState("America/Sao_Paulo");
+  const [rawCompanyContext, setRawCompanyContext] = useState("");
+  const [synthesizedContext, setSynthesizedContext] = useState("");
+  const [isActive, setIsActive] = useState(true);
+
+  // UI state
   const [isLoading, setIsLoading] = useState(false);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSave = async () => {
-    setIsLoading(true);
+  // Initialization effect
+  useEffect(() => {
+    if (isUpdateMode && existingConfig) {
+      setName(existingConfig.name || `Agente Ativo de ${tenant.name}`);
+      setSynthesizedContext(existingConfig.system_prompt || "");
+      // O raw context não é salvo, então o usuário pode adicionar mais detalhes
+      // setRawCompanyContext(...);
+      setIsActive(existingConfig.active);
+
+      if (existingConfig.trigger_config && existingConfig.trigger_config.type === 'schedule') {
+        setScheduleHour(String(existingConfig.trigger_config.hour || 8));
+        setTimezone(existingConfig.trigger_config.timezone || "America/Sao_Paulo");
+      }
+    }
+  }, [isUpdateMode, existingConfig, tenant.name]);
+
+  const handleSynthesize = async () => {
+    if (!rawCompanyContext.trim()) {
+      setError("Por favor, descreva sua empresa antes de otimizar.");
+      return;
+    }
+    setIsSynthesizing(true);
     setError(null);
     try {
-      await saveAgentPrompts(tenant.id, promptAtivo, promptReativo);
-      onPromptsSaved();
+      const result = await synthesizeCompanyContext(rawCompanyContext);
+      setSynthesizedContext(result);
     } catch (err: any) {
-      setError("Falha ao salvar os prompts. Tente novamente.");
+      setError(err.message || "Falha ao comunicar com a IA.");
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!channelSettings) {
+      setError("Configurações do canal WhatsApp não encontradas. Retorne ao passo 2.");
+      return;
+    }
+    if (!synthesizedContext) {
+      setError("O contexto gerado pela IA não pode estar vazio. Use o otimizador.");
+      return;
+    }
+    if (!name) {
+      setError("O nome do agente é obrigatório.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // 1. Fetch workflow template
+      const response = await fetch('/templates/workflow-ativo-base.json');
+      if (!response.ok) throw new Error(`Não foi possível carregar o template do workflow.`);
+      const templateString = await response.text();
+
+      // 2. Prepare configuration for the workflow
+      const config: WorkflowConfig = {
+        name,
+        scheduleHour: parseInt(scheduleHour, 10),
+        timezone,
+        systemPrompt: synthesizedContext,
+        instanceApiUrl: channelSettings.evo_base_url,
+        instanceName: channelSettings.instance_name,
+        instanceApiKey: channelSettings.instance_token,
+        isActive,
+      };
+
+      // 3. Modify workflow template in memory
+      const modifiedWorkflow = parseAndModifyWorkflow(templateString, config);
+
+      // 4. Create or Update the workflow in n8n
+      let n8nWorkflowId: string;
+      if (isUpdateMode && existingConfig?.n8n_workflow_id) {
+        await updateWorkflow(existingConfig.n8n_workflow_id, modifiedWorkflow);
+        n8nWorkflowId = existingConfig.n8n_workflow_id;
+      } else {
+        const newN8nWorkflow = await createWorkflow(modifiedWorkflow);
+        if (!newN8nWorkflow || !newN8nWorkflow.id) throw new Error("Falha ao criar workflow no n8n.");
+        n8nWorkflowId = newN8nWorkflow.id;
+      }
+
+      // 5. Save the final agent configuration to Supabase
+      const fullConfig = {
+        tenantId: tenant.id,
+        agentType: 'ativo' as const, // Standardized to lowercase to match type 'ativo' | 'reativo'
+        name,
+        systemPrompt: synthesizedContext,
+        scheduleHour: parseInt(scheduleHour, 10),
+        timezone,
+        isActive,
+        n8nWorkflowId,
+      };
+      await upsertAgentConfig(fullConfig);
+
+      // 6. Proceed
+      onAgentConfigSaved(fullConfig as any);
+
+    } catch (err: any) {
+      console.error("Falha ao salvar e configurar o agente:", err);
+      setError(err.message || "Ocorreu um erro desconhecido.");
     } finally {
       setIsLoading(false);
     }
@@ -533,54 +648,111 @@ const Step3AgentPrompts = ({ tenant, onPromptsSaved }: { tenant: Tenant, onPromp
   return (
     <Card>
       <CardHeader>
-        <CardTitle>3. Personalize seus Agentes de IA</CardTitle>
-        <CardDescription>Defina a personalidade dos seus agentes para prospecção e atendimento.</CardDescription>
+        <CardTitle>3. Configure o Agente Ativo</CardTitle>
+        <CardDescription>
+          {isUpdateMode
+            ? "Atualize as configurações do seu agente de prospecção."
+            : "Defina o nome, horário e personalidade do seu agente de IA."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* --- Basic Agent Settings --- */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+          <div className="space-y-2">
+            <Label htmlFor="agent-name">Nome do Agente</Label>
+            <Input
+              id="agent-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Ex: Agente de Vendas B2B"
+              disabled={isLoading}
+            />
+          </div>
+          <div className="space-y-2 pt-2 flex items-center gap-4">
+            <div className="flex items-center space-x-2">
+              <Switch id="agent-active" checked={isActive} onCheckedChange={setIsActive} disabled={isLoading} />
+              <Label htmlFor="agent-active">{isActive ? "Agente Ativo" : "Agente Inativo"}</Label>
+            </div>
+          </div>
+        </div>
+
+        {/* --- Schedule Settings --- */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <Label htmlFor="schedule-hour">⏰ Horário de Disparo</Label>
+            <Select value={scheduleHour} onValueChange={setScheduleHour} disabled={isLoading}>
+              <SelectTrigger id="schedule-hour"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: 24 }, (_, i) => (
+                  <SelectItem key={i} value={String(i)}>{String(i).padStart(2, "0")}:00</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="timezone">🌍 Fuso Horário</Label>
+            <Select value={timezone} onValueChange={setTimezone} disabled={isLoading}>
+              <SelectTrigger id="timezone"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="America/Sao_Paulo">Brasília (São Paulo)</SelectItem>
+                <SelectItem value="America/New_York">Nova Iorque</SelectItem>
+                <SelectItem value="Europe/Lisbon">Lisboa</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {/* --- AI Context Generation --- */}
         <div className="space-y-2">
-          <Label htmlFor="prompt-ativo">🤖 Agente Ativo (para prospecção)</Label>
-          <Textarea 
-            id="prompt-ativo" 
-            value={promptAtivo} 
-            onChange={(e) => setPromptAtivo(e.target.value)} 
-            rows={4} 
-            disabled={isLoading} 
+          <Label htmlFor="raw-context">Descreva sua Empresa (Missão, Tom de Voz, Diferenciais)</Label>
+          <Textarea
+            id="raw-context"
+            value={rawCompanyContext}
+            onChange={(e) => setRawCompanyContext(e.target.value)}
+            rows={5}
+            disabled={isLoading || isSynthesizing}
+            placeholder="Ex: Somos uma fintech que ajuda PMEs a automatizar o fluxo de caixa com IA. Nosso tom é direto e confiável. Nosso diferencial é a integração com qualquer sistema contábil em 5 minutos."
           />
         </div>
+        <div className="flex flex-col items-center">
+          <Button onClick={handleSynthesize} disabled={isLoading || isSynthesizing || !rawCompanyContext}>
+            {isSynthesizing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <span className="mr-2">🪄</span>
+            )}
+            Otimizar com IA
+          </Button>
+        </div>
         <div className="space-y-2">
-          <Label htmlFor="prompt-reativo">💬 Agente Reativo (para respostas)</Label>
-          <Textarea 
-            id="prompt-reativo" 
-            value={promptReativo} 
-            onChange={(e) => setPromptReativo(e.target.value)} 
-            rows={4} 
-            disabled={isLoading} 
+          <Label htmlFor="prompt-ativo">🤖 Contexto Gerado pela IA (System Prompt)</Label>
+          <Textarea
+            id="prompt-ativo"
+            value={synthesizedContext}
+            onChange={(e) => setSynthesizedContext(e.target.value)}
+            rows={8}
+            disabled={isLoading}
+            placeholder="O contexto otimizado para o agente de vendas aparecerá aqui..."
+            readOnly
           />
         </div>
+
         {error && (
-          <Alert variant="destructive">
-            <AlertTitle>Erro</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Alert variant="destructive"><AlertTitle>Erro</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>
         )}
       </CardContent>
       <CardFooter className="flex justify-end">
-        <Button onClick={handleSave} disabled={isLoading}>
+        <Button onClick={handleSave} disabled={isLoading || isSynthesizing}>
           {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Salvar Personalização
+          {isUpdateMode ? "Atualizar Agente" : "Criar Agente e Avançar"}
         </Button>
       </CardFooter>
     </Card>
   );
 };
 
-const Step4Finalize = ({ onFinalize }: { onFinalize: () => void }) => {
-  const { refreshTenant } = useAuth();
-
-  const handleFinish = async () => {
-    await refreshTenant();
-    onFinalize();
-  };
+const Step4Finalize = ({ tenant, onFinalize }: { tenant: Tenant; onFinalize: (tenantId: string) => void }) => {
+  const handleFinish = () => onFinalize(tenant.id);
 
   return (
     <Card>
@@ -605,12 +777,46 @@ const Step4Finalize = ({ onFinalize }: { onFinalize: () => void }) => {
 export default function Onboarding() {
   const [activeTab, setActiveTab] = useState("step1");
   const [showHelp, setShowHelp] = useState(true);
-  
+  const [isLoading, setIsLoading] = useState(false);
+
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [channelSettings, setChannelSettings] = useState<ChannelSettings | null>(null);
-  const [promptsSaved, setPromptsSaved] = useState(false);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
 
   const { user, refreshTenant } = useAuth();
+  const navigate = useNavigate();
+
+  const loadInitialData = useCallback(async (currentUser: User | null) => {
+    if (!currentUser) return;
+    setIsLoading(true);
+    try {
+      const existingTenant = await getTenantSettings(currentUser.id);
+      if (existingTenant) {
+        setTenant(existingTenant);
+        setActiveTab("step2");
+        const existingChannel = await getChannelSettings(existingTenant.id);
+        if (existingChannel && existingChannel.status === "CONNECTED") {
+          setChannelSettings(existingChannel);
+          setActiveTab("step3");
+          const existingAgentConfig = await getAgentConfig(existingTenant.id, 'ativo'); // Standardized
+          if(existingAgentConfig) {
+            setAgentConfig(existingAgentConfig);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao carregar dados iniciais:", error);
+    }
+    finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      loadInitialData(user);
+    }
+  }, [user, loadInitialData]);
 
   const handleTenantCreated = useCallback((newTenant: Tenant) => {
     setTenant(newTenant);
@@ -622,31 +828,48 @@ export default function Onboarding() {
     setActiveTab("step3");
   }, []);
 
-  const handlePromptsSaved = useCallback(() => {
-    setPromptsSaved(true);
+  const handleAgentConfigSaved = useCallback((newConfig: AgentConfig) => {
+    setAgentConfig(newConfig);
     setActiveTab("step4");
   }, []);
 
-  useEffect(() => {
-    const loadInitialData = async () => {
-      if (!user) return;
-      const existingTenant = await getTenantSettings(user.id);
-      if (existingTenant) {
-        handleTenantCreated(existingTenant);
-        const existingChannel = await getChannelSettings(existingTenant.id);
-        if (existingChannel && existingChannel.status === 'CONNECTED') {
-          handleChannelConnected(existingChannel);
-          // Aqui você poderia verificar se os prompts já estão salvos
-        }
-      }
-    };
-    loadInitialData();
-  }, [user, handleTenantCreated, handleChannelConnected]);
+  const handleFinalize = async (tenantId: string) => {
+    try {
+      await updateTenantOnboardingStatus(tenantId);
+      await refreshTenant();
+      alert("Onboarding Concluído! Redirecionando...");
+      navigate("/");
+    } catch (error) {
+      console.error("Erro ao finalizar o onboarding:", error);
+      alert("Ocorreu um erro ao finalizar. Tente novamente.");
+    }
+  };
 
-  const handleFinalize = async () => {
-    await refreshTenant();
-    alert("Onboarding Concluído! Redirecionando...");
-    window.location.href = '/';
+  const handleReset = async () => {
+    if (!tenant) return;
+    const confirmed = window.confirm(
+      "Tem certeza que deseja reiniciar o onboarding? Todas as configurações de canal e agentes serão perdidas."
+    );
+    if (confirmed) {
+      setIsLoading(true);
+      try {
+        await resetTenantOnboarding(tenant.id);
+        await refreshTenant();
+        // Reset local state
+        setActiveTab("step1");
+        setTenant(null);
+        setChannelSettings(null);
+        setAgentConfig(null);
+        // Re-fetch initial data to get a clean slate (or lack thereof)
+        await loadInitialData(user);
+      } catch (error) {
+        console.error("Failed to reset onboarding:", error);
+        alert("Falha ao reiniciar o onboarding.");
+      }
+      finally {
+        setIsLoading(false);
+      }
+    }
   };
 
   return (
@@ -655,64 +878,46 @@ export default function Onboarding() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Bem-vindo à Configuração!</DialogTitle>
-            <DialogDescription>
-              Vamos configurar seu ambiente em 4 passos simples. Complete cada etapa para habilitar a próxima.
-            </DialogDescription>
+            <DialogDescription>Vamos configurar seu ambiente em 4 passos simples.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4 text-sm text-muted-foreground">
-            <p><strong>1. Crie sua Loja:</strong> Dê um nome à sua empresa. É o primeiro passo para criar seu ambiente exclusivo.</p>
-            <p><strong>2. Conecte seu WhatsApp:</strong> Vincule seu número de WhatsApp para que os agentes de IA possam interagir com seus clientes.</p>
-            <p><strong>3. Personalize seus Agentes:</strong> Defina a "personalidade" e as instruções que seus robôs usarão nas conversas.</p>
-            <p><strong>4. Finalizar:</strong> Complete o processo para salvar tudo e acessar seu painel de controle principal.</p>
+            <p><strong>1. Crie sua Loja:</strong> Dê um nome à sua empresa.</p>
+            <p><strong>2. Conecte seu WhatsApp:</strong> Vincule seu número de WhatsApp.</p>
+            <p><strong>3. Personalize seus Agentes:</strong> Defina a "personalidade" dos seus robôs.</p>
+            <p><strong>4. Finalizar:</strong> Complete o processo para salvar tudo.</p>
           </div>
-          <DialogFooter>
-            <Button onClick={() => setShowHelp(false)}>Entendi</Button>
-          </DialogFooter>
+          <DialogFooter><Button onClick={() => setShowHelp(false)}>Entendi</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4 relative">
         <div className="w-full max-w-3xl space-y-6">
-          <div className="space-y-2 text-center">
-            <h1 className="text-3xl font-bold">Configuração Inicial</h1>
-            <p className="text-muted-foreground">
-              Siga as abas para configurar seu ambiente. Etapas concluídas desbloqueiam as seguintes.
-            </p>
-          </div>
+          
+          <OnboardingStatus 
+            tenant={tenant} 
+            channelSettings={channelSettings} 
+            agentConfig={agentConfig} 
+            onReset={handleReset}
+            isLoading={isLoading}
+          />
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="step1">1. Loja</TabsTrigger>
               <TabsTrigger value="step2" disabled={!tenant}>2. WhatsApp</TabsTrigger>
               <TabsTrigger value="step3" disabled={!channelSettings}>3. Agentes</TabsTrigger>
-              <TabsTrigger value="step4" disabled={!promptsSaved}>4. Finalizar</TabsTrigger>
+              <TabsTrigger value="step4" disabled={!agentConfig || !tenant}>4. Finalizar</TabsTrigger>
             </TabsList>
-            
-            <TabsContent value="step1">
-              <Step1Tenant tenant={tenant} onTenantCreated={handleTenantCreated} />
-            </TabsContent>
-            
-            <TabsContent value="step2">
-              {tenant && <Step2Whatsapp tenant={tenant} onChannelConnected={handleChannelConnected} />}
-            </TabsContent>
-            
-            <TabsContent value="step3">
-              {tenant && <Step3AgentPrompts tenant={tenant} onPromptsSaved={handlePromptsSaved} />}
-            </TabsContent>
-            
-            <TabsContent value="step4">
-              {<Step4Finalize onFinalize={handleFinalize} />}
-            </TabsContent>
+
+            <TabsContent value="step1"><Step1Tenant tenant={tenant} onTenantCreated={handleTenantCreated} /></TabsContent>
+            <TabsContent value="step2">{tenant && <Step2Whatsapp tenant={tenant} onChannelConnected={handleChannelConnected} />}</TabsContent>
+            <TabsContent value="step3">{tenant && channelSettings && <Step3AgentPrompts tenant={tenant} channelSettings={channelSettings} onAgentConfigSaved={handleAgentConfigSaved} existingConfig={agentConfig} />}</TabsContent>
+            <TabsContent value="step4">{tenant && <Step4Finalize tenant={tenant} onFinalize={handleFinalize} />}</TabsContent>
           </Tabs>
         </div>
-        
+
         <div className="fixed bottom-6 right-6">
-          <Button
-            variant="outline"
-            size="icon"
-            className="rounded-full h-14 w-14 shadow-lg"
-            onClick={() => setShowHelp(true)}
-          >
+          <Button variant="outline" size="icon" className="rounded-full h-14 w-14 shadow-lg" onClick={() => setShowHelp(true)}>
             <HelpCircle className="h-7 w-7" />
           </Button>
         </div>

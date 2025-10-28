@@ -25,18 +25,6 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     return <Navigate to="/onboarding" replace />;
   }
 
-  // Case 2: User has a tenant, but hasn't completed onboarding.
-  // They must be on the onboarding page.
-  if (member && tenant?.onboarding_status !== 'done' && location.pathname !== '/onboarding') {
-      return <Navigate to="/onboarding" replace />;
-  }
-
-  // Case 3: User has a tenant and has completed onboarding.
-  // They should not be on the onboarding page. Redirect to dashboard.
-  if (member && tenant?.onboarding_status === 'done' && location.pathname === '/onboarding') {
-      return <Navigate to="/" replace />;
-  }
-
   // Otherwise, render the requested page.
   return <>{children}</>;
 }
