@@ -5,18 +5,18 @@ import {
   useEffect,
   ReactNode,
   useCallback,
+  useMemo,
 } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
-import type { Tenant } from '@/types'; // Import Tenant type
+import type { Tenant } from '@/types';
 
-// Local Credentials type for sign-in (ensure it matches your backend auth fields)
+// Tipos locais de credenciais e membership
 interface Credentials {
   email: string;
   password: string;
 }
 
-// Represents the user's membership in a tenant
 export interface TenantMember {
   tenant_id: string;
   role: 'owner' | 'admin' | 'member';
@@ -25,7 +25,7 @@ export interface TenantMember {
 interface AuthContextType {
   user: User | null;
   member: TenantMember | null;
-  tenant: Tenant | null; // <-- Add tenant to context
+  tenant: Tenant | null;
   loading: boolean;
   login: (credentials: Credentials) => Promise<void>;
   logout: () => Promise<void>;
@@ -39,10 +39,10 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [member, setMember] = useState<TenantMember | null>(null);
-  const [tenant, setTenant] = useState<Tenant | null>(null); // <-- Add tenant state
+  const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetches both membership and tenant details
+  // Busca membership + tenant coerentemente
   const fetchUserContext = useCallback(async (currentUser: User | null) => {
     if (!currentUser) {
       setMember(null);
@@ -50,7 +50,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    // 1. Fetch user's LATEST membership in case they have multiple
+    // 1) Membership mais recente
     const { data: memberData, error: memberError } = await supabase
       .from('tenant_members')
       .select('tenant_id, role')
@@ -66,40 +66,47 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    if (memberData) {
-      setMember(memberData as TenantMember);
-
-      // 2. Fetch tenant details using the tenant_id from membership
-      const { data: tenantData, error: tenantError } = await supabase
-        .from('tenants')
-        .select('*')
-        .eq('id', memberData.tenant_id)
-        .single(); // .single() is fine here, as a member MUST have a tenant
-
-      if (tenantError) {
-        console.error('Error fetching tenant details:', tenantError.message);
-        // We have a member but can't get tenant details, a broken state.
-        setTenant(null);
-      } else {
-        setTenant(tenantData as Tenant);
-      }
-    } else {
-      // No membership found
+    if (!memberData) {
+      // Sem membership
       setMember(null);
       setTenant(null);
+      return;
     }
+
+    setMember(memberData as TenantMember);
+
+    // 2) Buscar tenant
+    const { data: tenantData, error: tenantError } = await supabase
+      .from('tenants')
+      .select('*')
+      .eq('id', memberData.tenant_id)
+      .single();
+
+    if (tenantError) {
+      console.error('Error fetching tenant details:', tenantError.message);
+      // Estado consistente: sem tenant => também zera member
+      setMember(null);
+      setTenant(null);
+      return;
+    }
+
+    setTenant(tenantData as Tenant);
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+
     const initializeAuth = async () => {
-      setLoading(true);
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const currentUser = session?.user ?? null;
-      setUser(currentUser);
-      await fetchUserContext(currentUser); // Use the new function
-      setLoading(false);
+      try {
+        setLoading(true);
+        const { data: { session } } = await supabase.auth.getSession();
+        const currentUser = session?.user ?? null;
+        if (!isMounted) return;
+        setUser(currentUser);
+        await fetchUserContext(currentUser);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
     };
 
     initializeAuth();
@@ -111,14 +118,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
         if (event === 'SIGNED_OUT') {
           setMember(null);
-          setTenant(null); // Clear tenant on sign out
+          setTenant(null);
         } else if (event === 'SIGNED_IN') {
-          await fetchUserContext(currentUser); // Use the new function
+          await fetchUserContext(currentUser);
         }
       }
     );
 
     return () => {
+      isMounted = false;
       authListener.subscription.unsubscribe();
     };
   }, [fetchUserContext]);
@@ -135,19 +143,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const refreshTenant = async () => {
     setLoading(true);
-    const { data: { session } } = await supabase.auth.getSession();
-    const currentUser = session?.user ?? null;
-    setUser(currentUser);
-    await fetchUserContext(currentUser); // Use the new function
-    setLoading(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+      await fetchUserContext(currentUser);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       return { error };
     } catch (error) {
       return { error: error as Error };
@@ -169,17 +177,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const value = {
-    user,
-    member,
-    tenant, // <-- Expose tenant
-    loading,
-    login,
-    logout,
-    refreshTenant,
-    signIn,
-    signUp,
-  };
+  // Evita recriar o objeto value a cada render
+  const value: AuthContextType = useMemo(
+    () => ({
+      user,
+      member,
+      tenant,
+      loading,
+      login,
+      logout,
+      refreshTenant,
+      signIn,
+      signUp,
+    }),
+    [user, member, tenant, loading]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

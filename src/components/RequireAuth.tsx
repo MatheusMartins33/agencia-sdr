@@ -15,16 +15,28 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     );
   }
 
+  // Não autenticado -> /auth (preserva origem para retorno pós-login)
   if (!user) {
-    return <Navigate to="/auth" replace />;
+    return <Navigate to="/auth" replace state={{ from: location }} />;
   }
 
-  // Case 1: User is authenticated but has no tenant membership yet.
-  // They must go to onboarding.
-  if (!member && location.pathname !== '/onboarding') {
-    return <Navigate to="/onboarding" replace />;
+  const isOnboardingRoute = location.pathname === '/onboarding';
+  const hasOnboarded = Boolean(member && tenant);
+
+  // Se estou na rota de onboarding:
+  if (isOnboardingRoute) {
+    // Usuário ainda não concluiu o onboarding -> permanece
+    if (!hasOnboarded) return <>{children}</>;
+    // Usuário já concluiu -> manda para home
+    return <Navigate to="/" replace />;
   }
 
-  // Otherwise, render the requested page.
+  // Qualquer outra rota:
+  // Usuário não concluiu -> força ir para onboarding
+  if (!hasOnboarded) {
+    return <Navigate to="/onboarding" replace state={{ from: location }} />;
+  }
+
+  // Liberado
   return <>{children}</>;
 }
